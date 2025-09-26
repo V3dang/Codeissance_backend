@@ -1,0 +1,163 @@
+API ENDPOINTS REFERENCE
+========================
+
+SERVER: http://localhost:3000
+
+USER ENDPOINTS
+--------------
+GET /users
+- Returns list of all users with their complete profile information
+
+POST /users
+- Creates a new user account with GitHub profile information
+
+POST /users/login  
+- Logs in user and returns JWT token for authentication
+
+GET /users/:githubId
+- Retrieves user profile information by GitHub ID
+
+
+PROJECT ENDPOINTS  
+-----------------
+GET /projects
+- Returns list of all projects with basic information (no auth required)
+
+POST /projects
+- Creates a new project manually with provided details
+
+GET /projects/:id
+- Gets detailed information about a specific project
+
+PUT /projects/:id
+- Updates an existing project (requires authentication)
+
+DELETE /projects/:id
+- Deletes a project (requires authentication)
+
+POST /analyze-url
+- Analyzes GitHub repository and creates project automatically (requires auth)
+
+GET /analyze/:owner/:repo
+- Analyzes specific GitHub repository by owner/repo (requires auth)
+
+
+PROJECT STRUCTURE & FILES
+-------------------------
+GET /structure/:owner/:repo
+- Returns file structure and organization of GitHub repository
+
+GET /download-ppt/:owner/:repo
+- Generates and downloads PowerPoint presentation for repository
+
+
+MENTOR ENDPOINTS
+----------------
+POST /mentors
+- Registers a new mentor with professional details
+
+POST /mentors/login
+- Logs in mentor and returns authentication info
+
+GET /mentors
+- Lists all registered mentors
+
+GET /mentors/:id
+- Gets detailed information about specific mentor
+
+
+REVIEW ENDPOINTS
+----------------
+POST /projects/:projectId/reviews
+- Creates a review for a project by a mentor
+
+GET /projects/:projectId/reviews
+- Gets all reviews for a specific project with statistics
+
+
+CONTRIBUTION REQUEST ENDPOINTS
+-------------------------------
+POST /projects/:projectId/contribution-requests
+- Send a request to contribute to a project (requires auth)
+
+GET /projects/:projectId/contribution-requests
+- Get all contribution requests for a project (project owner only)
+
+PUT /contribution-requests/:requestId/approve
+- Approve a contribution request (project owner only)
+
+PUT /contribution-requests/:requestId/reject
+- Reject a contribution request (project owner only)
+
+GET /contribution-requests/:requestId
+- Get specific contribution request details (requester or owner only)
+
+
+AUTHENTICATION
+--------------
+For testing, use this static token in Authorization header:
+Bearer test-token-static-user123
+
+Required payload field for manual project creation:
+"created_by": "static-test-user-id"
+
+
+SAMPLE PAYLOADS
+===============
+
+Create User:
+{
+    "name": "John Doe",
+    "githubId": "johndoe123",
+    "bio": "Full stack developer",
+    "tech_stack": ["JavaScript", "React", "Node.js"],
+    "email": "john@example.com"
+}
+
+Create Project:
+{
+    "name": "My Project",
+    "description": "Project description here",
+    "repo_link": "https://github.com/user/repo",
+    "owner": "user",
+    "repo": "repo",
+    "technology_stack": ["JavaScript", "React"]
+}
+
+Create Mentor:
+{
+    "name": "Jane Smith",
+    "email": "jane@mentor.com",
+    "title": "Senior Software Engineer",
+    "years_of_experience": 8,
+    "expertise_areas": ["JavaScript", "React", "System Design"],
+    "tech_stack": ["Node.js", "MongoDB", "AWS"],
+    "funding_capacity": 50000
+}
+
+Create Review:
+{
+    "mentor_id": "MENTOR_ID_HERE",
+    "rating": 4,
+    "title": "Great potential project",
+    "feedback": "Excellent structure and documentation",
+    "suggestions": "Add unit tests. Use TypeScript for better type safety.",
+    "strengths": ["Clean code", "Good documentation"],
+    "improvements": ["Test coverage", "Performance"],
+    "funding_interest": true
+}
+
+Send Contribution Request:
+{
+    "message": "I would love to contribute to this project. I have experience with React and Node.js and can help with frontend development and bug fixes."
+}
+
+Approve/Reject Contribution Request:
+{
+    "owner_response": "Welcome to the project! Please check our contributing guidelines."
+}
+
+Analyze Repository:
+{
+    "repoUrl": "https://github.com/facebook/react"
+}

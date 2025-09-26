@@ -6,6 +6,7 @@ import mongoose from 'mongoose';
 import jwt from 'jsonwebtoken';
 import { analyzeRepository, extractRepoInfo, getPopularityData } from './githubService.js';
 import { generatePitchDeckPPT, getProjectStructure } from './presentationService.js';
+import { createProjectPreview, stopPreview, listActivePreviews, stopAllPreviews, cleanupDockerResources } from './previewService.js';
 import { User, Project } from './models.js';
 
 dotenv.config();
@@ -16,10 +17,7 @@ const port = process.env.PORT || 3000;
 // MongoDB connection
 const uri = "mongodb+srv://kulkarnivedang005_db_user:cc8Ee8wK9oZAyOXC@cluster0.lxeu1jb.mongodb.net/codeissance?retryWrites=true&w=majority&appName=Cluster0";
 
-mongoose.connect(uri, {
-    useNewUrlParser: true,
-    useUnifiedTopology: true,
-})
+mongoose.connect(uri)
 .then(() => console.log('✅ Connected to MongoDB successfully!'))
 .catch(err => console.error('❌ MongoDB connection error:', err));
 
@@ -721,6 +719,92 @@ app.delete('/projects/:id', isAuthenticated, async (req, res) => {
     } catch (error) {
         console.error('❌ Project delete error:', error.message);
         return res.status(500).json({
+            success: false,
+            error: error.message
+        });
+    }
+});
+
+// 🎬 PROJECT PREVIEW ENDPOINTS
+
+// Create project preview (runs in Docker)
+app.post('/preview/:owner/:repo', isAuthenticated, async (req, res) => {
+    const { owner, repo } = req.params;
+    const { projectType, dockerConfig } = req.body;
+    
+    try {
+        console.log(`🎬 Creating preview for ${owner}/${repo}`);
+        
+        const preview = await createProjectPreview(owner, repo, {
+            projectType,
+            dockerConfig
+        });
+        
+        res.json(preview);
+        
+    } catch (error) {
+        console.error('❌ Preview creation error:', error.message);
+        res.status(500).json({
+            success: false,
+            error: error.message,
+            repository: { owner, repo },
+            suggestion: 'Check if Docker is running and repository is accessible'
+        });
+    }
+});
+
+// List active previews
+app.get('/previews', isAuthenticated, async (req, res) => {
+    try {
+        const previews = await listActivePreviews();
+        res.json(previews);
+    } catch (error) {
+        console.error('❌ List previews error:', error.message);
+        res.status(500).json({
+            success: false,
+            error: error.message
+        });
+    }
+});
+
+// Stop specific preview
+app.delete('/preview/:projectId', isAuthenticated, async (req, res) => {
+    const { projectId } = req.params;
+    
+    try {
+        const result = await stopPreview(projectId);
+        res.json(result);
+    } catch (error) {
+        console.error('❌ Stop preview error:', error.message);
+        res.status(500).json({
+            success: false,
+            error: error.message
+        });
+    }
+});
+
+// Stop all preview containers
+app.delete('/previews/all', isAuthenticated, async (req, res) => {
+    try {
+        const result = await stopAllPreviews();
+        res.json(result);
+    } catch (error) {
+        console.error('❌ Stop all previews error:', error.message);
+        res.status(500).json({
+            success: false,
+            error: error.message
+        });
+    }
+});
+
+// Clean up Docker resources
+app.post('/previews/cleanup', isAuthenticated, async (req, res) => {
+    try {
+        const result = await cleanupDockerResources();
+        res.json(result);
+    } catch (error) {
+        console.error('❌ Docker cleanup error:', error.message);
+        res.status(500).json({
             success: false,
             error: error.message
         });

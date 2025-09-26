@@ -3,9 +3,30 @@
   "version": "1.0.0",
   "description": "",
   "main": "index.js",
+  "type": "module",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
     "dev": "nodemon index.js"
+  },
+  "nodemonConfig": {
+    "ignore": [
+      "previews/",
+      "*.log",
+      "*.tmp",
+      "Dockerfile",
+      "docker-compose.yml",
+      "node_modules/",
+      ".git/",
+      "*.md"
+    ],
+    "watch": [
+      "*.js",
+      "*.json"
+    ],
+    "ext": "js,json",
+    "env": {
+      "NODE_ENV": "development"
+    }
   },
   "author": "",
   "license": "ISC",
@@ -16,6 +37,7 @@
   "dependencies": {
     "@google/genai": "^1.21.0",
     "@octokit/rest": "^22.0.0",
+    "archiver": "^7.0.1",
     "axios": "^1.12.2",
     "cookie-parser": "^1.4.7",
     "cors": "^2.8.5",
@@ -29,6 +51,7 @@
     "nodemon": "^3.1.10",
     "passport": "^0.7.0",
     "passport-github2": "^0.1.12",
-    "pptxgenjs": "^4.0.1"
+    "pptxgenjs": "^4.0.1",
+    "uuid": "^13.0.0"
   }
 }

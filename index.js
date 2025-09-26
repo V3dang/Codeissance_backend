@@ -3,7 +3,6 @@ import cors from 'cors';
 import multer from 'multer';
 import dotenv from 'dotenv';
 import mongoose from 'mongoose';
-import jwt from 'jsonwebtoken';
 import { analyzeRepository, extractRepoInfo } from './githubService.js';
 import { generatePitchDeckPPT, getProjectStructure } from './presentationService.js';
 import { User, Project, Mentor, Review, ContributionRequest } from './models.js';
@@ -34,6 +33,9 @@ import {
     getUserStats,
     getLeaderboard
 } from './gamificationService.js';
+import {
+    getProjectRecommendations
+} from './recommendationService.js';
 
 dotenv.config();
 
@@ -51,22 +53,8 @@ mongoose.connect(uri, {
 .catch(err => console.error('❌ MongoDB connection error:', err));
 
 // Generate JWT token
-const generateJWT = (user) => {
-    return jwt.sign(
-        { 
-            _id: user._id, 
-            githubId: user.githubId, 
-            name: user.name,
-            email: user.email,
-            avatar_url: user.avatar_url
-        },
-        process.env.JWT_SECRET || 'your-jwt-secret',
-        { expiresIn: '7d' }
-    );
-};
-
 // Middleware to check if user is authenticated via JWT
-const isAuthenticated = (req, res, next) => {
+const isAuthenticated = async (req, res, next) => {
     // Check for JWT token in Authorization header
     const token = req.headers.authorization && req.headers.authorization.startsWith('Bearer ') 
                   ? req.headers.authorization.split(' ')[1] 
@@ -74,79 +62,34 @@ const isAuthenticated = (req, res, next) => {
     
     if (token) {
         try {
-            // Try to verify JWT first
-            const decoded = jwt.verify(token, 'simple-jwt-secret-for-testing');
-            req.user = decoded;
-            return next();
-        } catch (error) {
-            // If JWT fails, check if it's a test token
-            if (token.startsWith('test-token-')) {
-                // Handle different test tokens for different users
-                if (token === 'test-token-static-user123' || token === 'test-token-vedang') {
-                    req.user = { 
-                        _id: '68d6788653192857b752aad9',
-                        name: 'Vedang',
-                        email: 'vedang@example.com',
-                        githubId: 'V3dang'
-                    };
-                    return next();
-                }
-                
-                if (token === 'test-token-alice') {
-                    req.user = { 
-                        _id: '68d69e4589fd8864c6e54631',
-                        name: 'Alice Johnson',
-                        email: 'alice.johnson@gmail.com',
-                        githubId: 'alice-johnson-123'
-                    };
-                    return next();
-                }
-                
-                if (token === 'test-token-john') {
-                    req.user = { 
-                        _id: '68d6a42dbc2f9b4b56d49b6b',
-                        name: 'John Doe',
-                        email: 'john@example.com',
-                        githubId: 'johndoe123'
-                    };
-                    return next();
-                }
-                
-                if (token === 'test-token-testuser') {
-                    req.user = { 
-                        _id: '68d6774453192857b752aad6',
-                        name: 'Test User',
-                        email: 'testuser@example.com',
-                        githubId: 'testuser123'
-                    };
-                    return next();
-                }
-                
-                if (token === 'test-token-projectowner') {
-                    req.user = { 
-                        _id: '68d6e3e8f7c1fa30dc694461',
-                        name: 'Project Owner',
-                        email: 'owner@example.com',
-                        githubId: 'projectowner456'
-                    };
-                    return next();
-                }
-                
-                // Extract user ID from dynamic test token
-                const parts = token.split('-');
-                const userId = parts[2];
-                req.user = { _id: userId };
+            // Check if token exists in database and get the associated user
+            const user = await User.findOne({ jwtToken: token });
+            
+            if (user) {
+                req.user = {
+                    _id: user._id,
+                    name: user.name,
+                    email: user.email,
+                    githubId: user.githubId
+                };
                 return next();
             }
             
             return res.status(401).json({ 
-                error: 'Invalid or expired token',
+                success: false,
+                error: 'Invalid token'
+            });
+        } catch (error) {
+            return res.status(401).json({ 
+                success: false,
+                error: 'Authentication error',
                 details: error.message 
             });
         }
     }
     
     res.status(401).json({ 
+        success: false,
         error: 'Authentication required',
         message: 'Please provide a valid JWT token via Authorization header: Bearer <token>'
     });
@@ -309,12 +252,10 @@ app.post('/auth/create-user', async (req, res) => {
         let user = await User.findOne({ githubId });
         
         if (user) {
-            // User exists, generate token and return
-            const token = generateJWT(user);
+            // User exists, return stored token
             return res.json({
                 success: true,
                 message: 'User already exists, logged in successfully',
-                token,
                 user: {
                     _id: user._id,
                     name: user.name,
@@ -336,18 +277,15 @@ app.post('/auth/create-user', async (req, res) => {
             bio,
             tech_stack,
             avatar_url: `https://github.com/identicons/${githubId}.png`,
-            github_profile: `https://github.com/${githubId}`
+            github_profile: `https://github.com/${githubId}`,
+            jwtToken: `test-token-${githubId}`
         });
         
         await user.save();
         
-        // Generate JWT token
-        const token = generateJWT(user);
-        
         res.status(201).json({
             success: true,
             message: 'User created successfully',
-            token,
             user: {
                 _id: user._id,
                 name: user.name,
@@ -357,12 +295,6 @@ app.post('/auth/create-user', async (req, res) => {
                 email: user.email,
                 avatar_url: user.avatar_url,
                 github_profile: user.github_profile
-            },
-            note: 'Use this token in Authorization header: Bearer <token>',
-            static_test_token: 'test-token-static-user123',
-            instructions: {
-                postman: 'In Postman, add Authorization header with value: Bearer test-token-static-user123',
-                note: 'This static token works for testing without database lookups'
             }
         });
         
@@ -626,6 +558,9 @@ app.post('/users', async (req, res) => {
                 data: user
             });
         } else {
+            // Generate JWT token in the format test-token-<username>
+            const jwtToken = `test-token-${githubId}`;
+            
             // Create new user
             user = new User({
                 name,
@@ -634,7 +569,8 @@ app.post('/users', async (req, res) => {
                 tech_stack: tech_stack || [],
                 email: email || '',
                 avatar_url: avatar_url || '',
-                github_profile: github_profile || ''
+                github_profile: github_profile || '',
+                jwtToken: jwtToken
             });
 
             await user.save();
@@ -681,24 +617,7 @@ app.post('/users/login', async (req, res) => {
             });
         }
 
-        // Generate JWT token - simplified for testing
-        let token;
-        try {
-            token = jwt.sign(
-                { 
-                    _id: user._id, 
-                    githubId: user.githubId, 
-                    name: user.name,
-                    email: user.email
-                },
-                'simple-jwt-secret-for-testing',
-                { expiresIn: '7d' }
-            );
-        } catch (jwtError) {
-            // If JWT fails, return a simple test token
-            token = `test-token-${user._id}-${Date.now()}`;
-        }
-
+        // Return the stored JWT token
         return res.json({
             success: true,
             message: 'Login successful',
@@ -708,8 +627,7 @@ app.post('/users/login', async (req, res) => {
                     name: user.name,
                     githubId: user.githubId,
                     email: user.email
-                },
-                token: token
+                }
             }
         });
 
@@ -787,6 +705,38 @@ app.get('/users/:githubId', async (req, res) => {
 // Gamification endpoints
 app.get('/users/:githubId/stats', getUserStats);
 app.get('/leaderboard', getLeaderboard);
+
+// Recommendations endpoint
+app.get('/users/:githubId/recommendations', isAuthenticated, async (req, res) => {
+    try {
+        const { githubId } = req.params;
+        
+        // Find the user to get their ID
+        const user = await User.findOne({ githubId });
+        if (!user) {
+            return res.status(404).json({
+                success: false,
+                error: 'User not found'
+            });
+        }
+        
+        // Get recommendations using the recommendation service
+        const recommendations = await getProjectRecommendations(user._id.toString());
+        
+        return res.json({
+            success: true,
+            ...recommendations
+        });
+        
+    } catch (error) {
+        console.error('Error getting recommendations:', error);
+        return res.status(500).json({
+            success: false,
+            error: 'Failed to get recommendations',
+            details: error.message
+        });
+    }
+});
 
 // Project management endpoints
 app.get('/projects', async (req, res) => {
@@ -961,53 +911,7 @@ app.put('/contribution-requests/:requestId/reject', isAuthenticated, rejectContr
 app.get('/contribution-requests/:requestId', isAuthenticated, getContributionRequest);
 
 // Fix project ownership endpoint (for testing)
-app.post('/fix-project-owners', async (req, res) => {
-    try {
-        // Update "My Awesome Project" to be owned by Alice Johnson
-        const project1 = await Project.findByIdAndUpdate('68d6ab70d2fe4399778b55e9', {
-            created_by: '68d69e4589fd8864c6e54631' // Alice Johnson
-        }, { new: true });
-        
-        // Update "Express" project to be owned by John Doe  
-        const project2 = await Project.findByIdAndUpdate('68d678bb53192857b752aadc', {
-            created_by: '68d6a42dbc2f9b4b56d49b6b' // John Doe
-        }, { new: true });
-
-        // Also update any existing contribution requests to have the correct owner
-        await ContributionRequest.updateMany(
-            { project_id: '68d6ab70d2fe4399778b55e9' },
-            { project_owner_id: '68d69e4589fd8864c6e54631' }
-        );
-        
-        await ContributionRequest.updateMany(
-            { project_id: '68d678bb53192857b752aadc' },
-            { project_owner_id: '68d6a42dbc2f9b4b56d49b6b' }
-        );
-        
-        res.json({
-            success: true,
-            message: 'Project owners and contribution requests updated successfully',
-            updates: {
-                'My Awesome Project': {
-                    id: '68d6ab70d2fe4399778b55e9',
-                    new_owner: 'Alice Johnson (68d69e4589fd8864c6e54631)',
-                    updated: !!project1
-                },
-                'Express': {
-                    id: '68d678bb53192857b752aadc', 
-                    new_owner: 'John Doe (68d6a42dbc2f9b4b56d49b6b)',
-                    updated: !!project2
-                }
-            }
-        });
-        
-    } catch (error) {
-        res.status(500).json({
-            success: false,
-            error: error.message
-        });
-    }
-});// Error handling middleware
+// Error handling middleware
 app.use((error, req, res, next) => {
     console.error('Unhandled error:', error);
     res.status(500).json({

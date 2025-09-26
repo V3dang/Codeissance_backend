@@ -10,12 +10,16 @@ GET /users
 
 POST /users
 - Creates a new user account with GitHub profile information
+- Automatically generates JWT token in format: test-token-<githubId>
 
 POST /users/login  
-- Logs in user and returns JWT token for authentication
+- Logs in user and returns user information
 
 GET /users/:githubId
 - Retrieves user profile information by GitHub ID
+
+GET /users/:githubId/stats
+- Gets gamification stats for a user (contribution points and title)
 
 
 PROJECT ENDPOINTS  
@@ -93,13 +97,41 @@ GET /contribution-requests/:requestId
 - Get specific contribution request details (requester or owner only)
 
 
+GAMIFICATION ENDPOINTS
+-----------------------
+GET /users/:githubId/stats
+- Gets user gamification stats (contribution points and title)
+
+GET /leaderboard
+- Gets top 10 users by contribution points
+
+
+RECOMMENDATION ENDPOINTS
+-------------------------
+GET /users/:githubId/recommendations
+- Gets personalized project recommendations based on user's tech stack
+- Projects sorted by recommendation score (tech stack matches = 2 points, tag matches = 1 point)
+
+
 AUTHENTICATION
 --------------
-For testing, use this static token in Authorization header:
-Bearer test-token-static-user123
+JWT Token Format: test-token-<githubId>
+Example: test-token-johndoe123
 
-Required payload field for manual project creation:
-"created_by": "static-test-user-id"
+Tokens are automatically generated during user registration and stored in the database.
+Use in Authorization header: Bearer test-token-<githubId>
+
+
+GAMIFICATION SYSTEM
+-------------------
+Title Progression:
+- Newbie: 0 points (default)
+- Soilder: 10 points  
+- Knight: 30 points
+- General: 60 points
+- Hero: 100 points
+
+Points awarded: 1 point per approved contribution request
 
 
 SAMPLE PAYLOADS

@@ -42,6 +42,10 @@ const userSchema = new mongoose.Schema({
     title: {
         type: String,
         default: 'Newbie'
+    },
+    jwtToken: {
+        type: String,
+        unique: true
     }
 }, { timestamps: true });
 

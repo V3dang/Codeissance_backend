@@ -193,6 +193,165 @@ Return ONLY this JSON structure:
     }
 };
 
+// Function to fetch popularity graph data (stars, commits, contributors)
+export const getPopularityData = async (owner, repo) => {
+    try {
+        console.log(`📈 Fetching popularity data for: ${owner}/${repo}`);
+        
+        // Fetch repository basic data
+        const { data: repoData } = await octokit.rest.repos.get({ owner, repo });
+        
+        // Fetch commit activity stats with error handling
+        let commitActivity = null;
+        try {
+            const { data } = await octokit.rest.repos.getCommitActivityStats({ owner, repo });
+            commitActivity = data;
+        } catch (error) {
+            console.warn(`Commit activity stats not available: ${error.message}`);
+            commitActivity = null;
+        }
+        
+        // Fetch contributors with their contribution counts
+        let contributors = [];
+        try {
+            const { data } = await octokit.rest.repos.listContributors({ 
+                owner, 
+                repo,
+                per_page: 20 // Top 20 contributors
+            });
+            contributors = data || [];
+        } catch (error) {
+            console.warn(`Contributors data not available: ${error.message}`);
+            contributors = [];
+        }
+        
+        // Fetch weekly commit counts for the last year (with error handling)
+        let weeklyCommits = null;
+        try {
+            const { data } = await octokit.rest.repos.getCodeFrequencyStats({ owner, repo });
+            weeklyCommits = data;
+        } catch (error) {
+            console.warn(`Code frequency stats not available: ${error.message}`);
+            weeklyCommits = null;
+        }
+        
+        // Fetch languages used in the repository
+        let languages = {};
+        try {
+            const { data } = await octokit.rest.repos.listLanguages({ owner, repo });
+            languages = data || {};
+        } catch (error) {
+            console.warn(`Languages data not available: ${error.message}`);
+            languages = {};
+        }
+        
+        // Process commit activity data for graph
+        const commitGraphData = (commitActivity && Array.isArray(commitActivity)) ? commitActivity.map((week, index) => ({
+            week: new Date(week.week * 1000).toISOString().split('T')[0], // Convert to readable date
+            commits: week.total,
+            weekIndex: index
+        })) : [];
+        
+        // Process contributors data
+        const contributorsData = (contributors && Array.isArray(contributors)) ? contributors.map(contributor => ({
+            login: contributor.login,
+            contributions: contributor.contributions,
+            avatar_url: contributor.avatar_url,
+            html_url: contributor.html_url,
+            type: contributor.type
+        })) : [];
+        
+        // Process weekly commits (additions and deletions)
+        const codeFrequencyData = (weeklyCommits && Array.isArray(weeklyCommits)) ? 
+            weeklyCommits.slice(-52).map((week, index) => ({ // Last 52 weeks
+                week: new Date(week[0] * 1000).toISOString().split('T')[0],
+                additions: week[1] || 0,
+                deletions: Math.abs(week[2] || 0), // Make deletions positive for graph
+                net: (week[1] || 0) + (week[2] || 0),
+                weekIndex: index
+            })) : [];
+        
+        // Calculate total language percentages
+        const totalBytes = Object.values(languages || {}).reduce((sum, bytes) => sum + bytes, 0);
+        const languagePercentages = totalBytes > 0 ? Object.entries(languages).map(([language, bytes]) => ({
+            language,
+            bytes,
+            percentage: ((bytes / totalBytes) * 100).toFixed(1)
+        })).sort((a, b) => b.bytes - a.bytes) : [];
+        
+        // Create star progression estimate (since we can't get historical stars)
+        // We'll create a rough estimate based on creation date and current stars
+        const createdDate = new Date(repoData.created_at);
+        const now = new Date();
+        const monthsDiff = (now.getFullYear() - createdDate.getFullYear()) * 12 + (now.getMonth() - createdDate.getMonth());
+        
+        const starProgression = [];
+        const currentStars = repoData.stargazers_count;
+        
+        // Generate estimated star growth (exponential-like curve)
+        for (let i = 0; i <= Math.min(monthsDiff, 24); i++) { // Max 24 months
+            const progressRatio = i / Math.max(monthsDiff, 1);
+            const estimatedStars = Math.floor(currentStars * Math.pow(progressRatio, 0.7)); // Exponential growth curve
+            const monthDate = new Date(createdDate);
+            monthDate.setMonth(monthDate.getMonth() + i);
+            
+            starProgression.push({
+                month: monthDate.toISOString().split('T')[0],
+                stars: estimatedStars,
+                monthIndex: i
+            });
+        }
+        
+        // Repository health metrics
+        const healthMetrics = {
+            starsPerMonth: monthsDiff > 0 ? (currentStars / monthsDiff).toFixed(1) : 0,
+            forksRatio: currentStars > 0 ? (repoData.forks_count / currentStars).toFixed(2) : 0,
+            issuesRatio: (repoData.open_issues_count / Math.max(currentStars, 1)).toFixed(3),
+            contributorsCount: contributorsData.length,
+            activeContributors: contributorsData.filter(c => c.contributions > 5).length,
+            recentActivity: commitGraphData.length > 8 ? commitGraphData.slice(-8).reduce((sum, week) => sum + week.commits, 0) : commitGraphData.reduce((sum, week) => sum + week.commits, 0)
+        };
+        
+        const result = {
+            success: true,
+            repository: {
+                owner,
+                repo,
+                name: repoData.name,
+                description: repoData.description,
+                created_at: repoData.created_at,
+                updated_at: repoData.updated_at,
+                url: `https://github.com/${owner}/${repo}`
+            },
+            currentStats: {
+                stars: repoData.stargazers_count,
+                forks: repoData.forks_count,
+                watchers: repoData.watchers_count,
+                openIssues: repoData.open_issues_count,
+                language: repoData.language,
+                size: repoData.size
+            },
+            graphData: {
+                commitActivity: commitGraphData.slice(-26), // Last 26 weeks (6 months)
+                starProgression: starProgression,
+                codeFrequency: codeFrequencyData,
+                languages: languagePercentages,
+                contributors: contributorsData
+            },
+            healthMetrics,
+            generatedAt: new Date().toISOString(),
+            note: "Star progression is estimated based on creation date and current stars. Commit activity and code frequency are actual GitHub data."
+        };
+        
+        console.log('✅ Popularity data fetched successfully');
+        return result;
+        
+    } catch (error) {
+        console.error('❌ Error fetching popularity data:', error.message);
+        throw new Error(`Failed to fetch popularity data: ${error.message}`);
+    }
+};
+
 // Main function to analyze a GitHub repository
 export const analyzeRepository = async (owner, repo) => {
     const cacheKey = getCacheKey(owner, repo);

@@ -4,7 +4,7 @@ import multer from 'multer';
 import dotenv from 'dotenv';
 import mongoose from 'mongoose';
 import jwt from 'jsonwebtoken';
-import { analyzeRepository, extractRepoInfo } from './githubService.js';
+import { analyzeRepository, extractRepoInfo, getPopularityData } from './githubService.js';
 import { generatePitchDeckPPT, getProjectStructure } from './presentationService.js';
 import { User, Project } from './models.js';
 
@@ -436,6 +436,25 @@ app.get('/structure/:owner/:repo', async (req, res) => {
             error: error.message,
             repository: { owner, repo },
             suggestion: 'Try again in a few moments. GitHub API might be experiencing issues.'
+        });
+    }
+});
+
+// Popularity graph data endpoint (for frontend charts)
+app.get('/popularity/:owner/:repo', async (req, res) => {
+    const { owner, repo } = req.params;
+    
+    try {
+        console.log(`📈 Fetching popularity data for: ${owner}/${repo}`);
+        const popularityData = await getPopularityData(owner, repo);
+        return res.json(popularityData);
+    } catch (error) {
+        console.error('❌ Popularity data fetch error:', error.message);
+        return res.status(500).json({
+            success: false,
+            error: error.message,
+            repository: { owner, repo },
+            suggestion: 'Repository might be private or API limits reached. Try again later.'
         });
     }
 });

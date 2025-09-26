@@ -1,0 +1,44 @@
+CODEISSANCE BACKEND API ENDPOINTS
+=====================================
+
+BASE URL: http://localhost:3000
+
+=====================================
+
+GET http://localhost:3000/ - Server status and info
+
+GET http://localhost:3000/auth/github - Start GitHub login
+GET http://localhost:3000/auth/github/callback - GitHub callback after login
+GET http://localhost:3000/auth/failure - Authentication failure page
+GET http://localhost:3000/auth/logout - Logout user
+GET http://localhost:3000/auth/me - Get current user info
+GET http://localhost:3000/auth/status - Check if user is logged in
+POST http://localhost:3000/auth/generate-token - Generate JWT token for user
+POST http://localhost:3000/auth/validate-token - Check if JWT token is valid
+
+POST http://localhost:3000/users - Create new user
+GET http://localhost:3000/users - Get all users
+GET http://localhost:3000/users/:id - Get specific user
+PUT http://localhost:3000/users/:id - Update user profile
+GET http://localhost:3000/users/github/:githubId - Find user by GitHub ID
+POST http://localhost:3000/users/github - Find or create user by GitHub ID
+GET http://localhost:3000/users/tech-stacks/all - Get all tech stacks
+GET http://localhost:3000/users/tech-stack/:tech - Get users by technology
+
+POST http://localhost:3000/projects - Create new project (auth required)
+POST http://localhost:3000/projects/with-user - Create project with user ID
+GET http://localhost:3000/projects - Get all projects (with search/filters)
+GET http://localhost:3000/projects/:id - Get specific project
+PUT http://localhost:3000/projects/:id - Update project
+DELETE http://localhost:3000/projects/:id - Delete project
+POST http://localhost:3000/projects/:id/modifications - Add modification to project
+GET http://localhost:3000/users/:userId/projects - Get projects by user
+
+GET http://localhost:3000/projects/tags/all - Get all project tags
+GET http://localhost:3000/projects/tags/:tag - Get projects by tag
+GET http://localhost:3000/projects/tech-stack/all - Get all project technologies
+GET http://localhost:3000/projects/search/:searchTerm - Search projects
+
+POST http://localhost:3000/upload - Upload file
+
+=====================================

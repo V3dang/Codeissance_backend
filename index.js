@@ -1,44 +1,177 @@
 import express from 'express';
-import axios from 'axios';
 import cors from 'cors';
 import multer from 'multer';
-import { GoogleGenAI } from "@google/genai";
-import { Octokit } from "@octokit/rest";
 import dotenv from 'dotenv';
+import mongoose from 'mongoose';
+import jwt from 'jsonwebtoken';
+import { analyzeRepository, extractRepoInfo } from './githubService.js';
+import { generatePitchDeckPPT, getProjectStructure } from './presentationService.js';
+import { User, Project } from './models.js';
 
 dotenv.config();
 
 const app = express();
 const port = process.env.PORT || 3000;
 
-const ai = new GoogleGenAI({});
-const octokit = new Octokit({
-    auth: process.env.GITHUB_TOKEN,
-    request: {
-        timeout: 20000, // 20 second timeout
-        retries: 2,     // Retry failed requests
-    },
-});
+// MongoDB connection
+const uri = "mongodb+srv://kulkarnivedang005_db_user:cc8Ee8wK9oZAyOXC@cluster0.lxeu1jb.mongodb.net/codeissance?retryWrites=true&w=majority&appName=Cluster0";
 
-// Simple in-memory cache
-const cache = new Map();
-const CACHE_DURATION = 10 * 60 * 1000; // 10 minutes
+mongoose.connect(uri, {
+    useNewUrlParser: true,
+    useUnifiedTopology: true,
+})
+.then(() => console.log('✅ Connected to MongoDB successfully!'))
+.catch(err => console.error('❌ MongoDB connection error:', err));
 
-// Cache helper functions
-const getCacheKey = (owner, repo) => `${owner}/${repo}`;
-const getCachedData = (key) => {
-    const cached = cache.get(key);
-    if (cached && Date.now() - cached.timestamp < CACHE_DURATION) {
-        return cached.data;
+// Generate JWT token
+const generateJWT = (user) => {
+    return jwt.sign(
+        { 
+            _id: user._id, 
+            githubId: user.githubId, 
+            name: user.name,
+            email: user.email,
+            avatar_url: user.avatar_url
+        },
+        process.env.JWT_SECRET || 'your-jwt-secret',
+        { expiresIn: '7d' }
+    );
+};
+
+// Middleware to check if user is authenticated via JWT
+const isAuthenticated = (req, res, next) => {
+    // Check for JWT token in Authorization header
+    const token = req.headers.authorization && req.headers.authorization.startsWith('Bearer ') 
+                  ? req.headers.authorization.split(' ')[1] 
+                  : null;
+    
+    if (token) {
+        try {
+            const decoded = jwt.verify(token, process.env.JWT_SECRET || 'your-jwt-secret');
+            // Add user info to request object
+            req.user = decoded;
+            return next();
+        } catch (error) {
+            return res.status(401).json({ 
+                error: 'Invalid or expired token',
+                details: error.message 
+            });
+        }
     }
-    cache.delete(key);
-    return null;
-};
-const setCachedData = (key, data) => {
-    cache.set(key, { data, timestamp: Date.now() });
+    
+    res.status(401).json({ 
+        error: 'Authentication required',
+        message: 'Please provide a valid JWT token via Authorization header: Bearer <token>'
+    });
 };
 
-app.use(cors());
+// Helper function to save project data to database
+const saveProjectToDatabase = async (analysisData, userId = null) => {
+    try {
+        const { repository, metadata, commits, issues, analysis, readmeLength } = analysisData;
+        
+        // Check if project already exists
+        let project = await Project.findOne({
+            owner: repository.owner,
+            repo: repository.repo
+        });
+        
+        const projectData = {
+            name: repository.repo,
+            description: metadata.description || 'No description available',
+            repo_link: repository.url,
+            owner: repository.owner,
+            repo: repository.repo,
+            github_data: {
+                stars: metadata.stars,
+                forks: metadata.forks,
+                watchers: metadata.watchers,
+                language: metadata.language,
+                topics: metadata.topics || [],
+                size: metadata.size,
+                open_issues: metadata.open_issues,
+                license: metadata.license,
+                created_at: metadata.created_at,
+                updated_at: metadata.updated_at
+            },
+            analysis: {
+                project_summary: {
+                    title: analysis.projectSummary?.title,
+                    description: analysis.projectSummary?.description,
+                    main_purpose: analysis.projectSummary?.mainPurpose,
+                    target_audience: analysis.projectSummary?.targetAudience
+                },
+                health_report: {
+                    overall_health: analysis.healthReport?.overallHealth,
+                    completeness: analysis.healthReport?.completeness,
+                    activity_level: analysis.healthReport?.activityLevel,
+                    community_engagement: analysis.healthReport?.communityEngagement,
+                    potential_issues: analysis.healthReport?.potentialIssues || [],
+                    missing_components: analysis.healthReport?.missingComponents || []
+                },
+                roadmap: {
+                    next_steps: analysis.roadmap?.nextSteps || [],
+                    improvements: analysis.roadmap?.improvements || [],
+                    features: analysis.roadmap?.features || [],
+                    priorities: analysis.roadmap?.priorities || []
+                },
+                pitch_deck: {
+                    problem_solved: analysis.pitchDeck?.problemSolved,
+                    solution: analysis.pitchDeck?.solution,
+                    tech_stack: analysis.pitchDeck?.techStack || [],
+                    unique_value: analysis.pitchDeck?.uniqueValue,
+                    impact: analysis.pitchDeck?.impact,
+                    market_potential: analysis.pitchDeck?.marketPotential,
+                    current_state: analysis.pitchDeck?.currentState,
+                    future_vision: analysis.pitchDeck?.futureVision
+                }
+            },
+            recent_commits: commits.map(commit => ({
+                sha: commit.sha,
+                message: commit.message,
+                author: commit.author,
+                date: new Date(commit.date),
+                url: commit.url
+            })),
+            recent_issues: issues.map(issue => ({
+                number: issue.number,
+                title: issue.title,
+                body: issue.body,
+                labels: issue.labels,
+                created_at: new Date(issue.created_at),
+                user: issue.user,
+                url: issue.url
+            })),
+            technology_stack: analysis.pitchDeck?.techStack || [metadata.language].filter(Boolean),
+            readme_length: readmeLength,
+            last_analyzed: new Date(),
+            created_by: userId
+        };
+        
+        if (project) {
+            // Update existing project
+            Object.assign(project, projectData);
+            await project.save();
+            console.log(`✅ Updated existing project in database: ${repository.owner}/${repository.repo}`);
+        } else {
+            // Create new project
+            project = new Project(projectData);
+            await project.save();
+            console.log(`✅ Saved new project to database: ${repository.owner}/${repository.repo}`);
+        }
+        
+        return project;
+    } catch (error) {
+        console.error('❌ Database save error:', error.message);
+        throw new Error(`Failed to save project to database: ${error.message}`);
+    }
+};
+
+// Middleware
+app.use(cors({
+    origin: ['http://localhost:3000', 'http://localhost:3001', 'http://localhost:5173'], // Add your frontend URLs
+    credentials: true
+}));
 app.use(express.json());
 
 // Request timeout middleware
@@ -47,251 +180,188 @@ app.use((req, res, next) => {
     next();
 });
 
-// Utility function to extract owner and repo from GitHub URL
-const extractRepoInfo = (repoUrl) => {
-    const regex = /github\.com\/([^\/]+)\/([^\/]+)/;
-    const match = repoUrl.match(regex);
-    if (!match) {
-        throw new Error('Invalid GitHub URL format');
-    }
-    return { owner: match[1], repo: match[2] };
-};
 
-// Function to fetch repository metadata
-const fetchRepoData = async (owner, repo) => {
-    try {
-        const { data } = await octokit.rest.repos.get({
-            owner,
-            repo,
-        });
-        
-        return {
-            name: data.name,
-            description: data.description,
-            stars: data.stargazers_count,
-            forks: data.forks_count,
-            watchers: data.watchers_count,
-            language: data.language,
-            topics: data.topics,
-            created_at: data.created_at,
-            updated_at: data.updated_at,
-            size: data.size,
-            open_issues: data.open_issues_count,
-            license: data.license?.name,
-            default_branch: data.default_branch,
-        };
-    } catch (error) {
-        throw new Error(`Failed to fetch repository data: ${error.message}`);
-    }
-};
-
-// Function to fetch latest commits
-const fetchLatestCommits = async (owner, repo, limit = 5) => {
-    try {
-        const { data } = await octokit.rest.repos.listCommits({
-            owner,
-            repo,
-            per_page: limit,
-        });
-        
-        return data.map(commit => ({
-            sha: commit.sha.substring(0, 7),
-            message: commit.commit.message,
-            author: commit.commit.author.name,
-            date: commit.commit.author.date,
-            url: commit.html_url,
-        }));
-    } catch (error) {
-        throw new Error(`Failed to fetch commits: ${error.message}`);
-    }
-};
-
-// Function to fetch open issues
-const fetchOpenIssues = async (owner, repo, limit = 5) => {
-    try {
-        const { data } = await octokit.rest.issues.listForRepo({
-            owner,
-            repo,
-            state: 'open',
-            per_page: limit,
-        });
-        
-        return data.map(issue => ({
-            number: issue.number,
-            title: issue.title,
-            body: issue.body?.substring(0, 200) + (issue.body?.length > 200 ? '...' : ''),
-            labels: issue.labels.map(label => label.name),
-            created_at: issue.created_at,
-            user: issue.user.login,
-            url: issue.html_url,
-        }));
-    } catch (error) {
-        throw new Error(`Failed to fetch issues: ${error.message}`);
-    }
-};
-
-// Function to fetch README content
-const fetchReadme = async (owner, repo) => {
-    try {
-        const { data } = await octokit.rest.repos.getReadme({
-            owner,
-            repo,
-        });
-        
-        // Decode base64 content
-        const content = Buffer.from(data.content, 'base64').toString('utf-8');
-        return content;
-    } catch (error) {
-        console.warn(`README not found: ${error.message}`);
-        return 'No README file found';
-    }
-};
-
-// Function to generate AI insights using Gemini (optimized for speed)
-const generateAiInsights = async (repoData, commits, issues, readme) => {
-    try {
-        // Shortened prompt for faster response
-        const prompt = `Analyze GitHub repo "${repoData.name}" (${repoData.language}) with ${repoData.stars} stars, ${repoData.forks} forks.
-Description: ${repoData.description || 'No description'}
-${commits.length} recent commits, ${issues.length} open issues
-README: ${readme.substring(0, 1000)}
-
-Return ONLY this JSON structure:
-{"projectSummary":{"title":"${repoData.name}","description":"Brief 1-sentence description","mainPurpose":"Main purpose","targetAudience":"Target users"},"healthReport":{"overallHealth":"Good/Fair/Poor","completeness":"Complete/Partial/Basic","activityLevel":"High/Medium/Low","communityEngagement":"Active/Moderate/Low","potentialIssues":["Issue 1","Issue 2"],"missingComponents":["Missing 1"]},"roadmap":{"nextSteps":["Step 1","Step 2","Step 3"],"improvements":["Improvement 1"],"features":["Feature 1"],"priorities":["Priority 1"]},"pitchDeck":{"problemSolved":"Problem solved","solution":"How it solves","techStack":["${repoData.language || 'Unknown'}"],"uniqueValue":"Unique value","impact":"Impact","marketPotential":"Market","currentState":"Current state","futureVision":"Future vision"}}`;
-        
-        const response = await ai.models.generateContent({
-            model: "gemini-2.5-flash",
-            contents: prompt,
-        });
-        
-        // Try to parse the JSON response
-        try {
-            const cleanedResponse = response.text.replace(/```json|```/g, '').trim();
-            return JSON.parse(cleanedResponse);
-        } catch (parseError) {
-            // Quick fallback without AI if parsing fails
-            return {
-                projectSummary: { 
-                    title: repoData.name, 
-                    description: repoData.description || "GitHub repository",
-                    mainPurpose: `${repoData.language} development project`,
-                    targetAudience: "Developers"
-                },
-                healthReport: { 
-                    overallHealth: repoData.stars > 100 ? "Good" : "Fair", 
-                    completeness: "Unable to assess quickly",
-                    activityLevel: commits.length > 3 ? "High" : "Medium",
-                    communityEngagement: `${repoData.stars} stars indicates ${repoData.stars > 500 ? 'high' : 'moderate'} engagement`,
-                    potentialIssues: [`${issues.length} open issues to resolve`],
-                    missingComponents: ["Full analysis requires manual review"]
-                },
-                roadmap: { 
-                    nextSteps: ["Review recent commits", "Address open issues", "Update documentation"], 
-                    improvements: ["Code optimization", "Better documentation"], 
-                    features: ["Community requested features"], 
-                    priorities: ["Bug fixes", "Performance improvements"] 
-                },
-                pitchDeck: { 
-                    problemSolved: repoData.description || "See repository for details", 
-                    solution: `${repoData.language} based solution`,
-                    techStack: [repoData.language || "Multiple technologies"],
-                    uniqueValue: `${repoData.stars} developers find this valuable`,
-                    impact: `Serves ${repoData.forks} forks and ${repoData.watchers} watchers`,
-                    marketPotential: "Open source developer community",
-                    currentState: "Active development",
-                    futureVision: "Continued community growth"
-                }
-            };
-        }
-    } catch (error) {
-        throw new Error(`Failed to generate AI insights: ${error.message}`);
-    }
-};
 
 // Routes
 app.get('/', (req, res) => {
     return res.json({ 
-        message: 'GitHub Repository Analyzer API',
+        message: 'GitHub Repository Analyzer API with Authentication',
         endpoints: {
-            analyze: '/analyze/:owner/:repo',
-            analyzeByUrl: '/analyze-url'
+            // Authentication endpoints
+            login: '/auth/github - GitHub OAuth login',
+            loginCallback: '/auth/github/callback - OAuth callback',
+            logout: '/auth/logout - Logout user',
+            profile: '/auth/profile - Get current user profile',
+            
+            // Analysis endpoints (🔒 = Auth Required)
+            analyze: '/analyze/:owner/:repo - 🔒 Full analysis + save to DB',
+            analyzeByUrl: '/analyze-url (POST) - 🔒 Analysis with URL + save to DB',
+            projectStructure: '/structure/:owner/:repo - Project structure',
+            downloadPPT: '/download-ppt/:owner/:repo - Download PowerPoint',
+            
+            // User management (🔒 = Auth Required)
+            updateUser: '/users (PUT) - 🔒 Update current user',
+            getUser: '/users/:githubId (GET) - Get user by GitHub ID',
+            
+            // Project management (🔒 = Auth Required)
+            listProjects: '/projects - 🔒 List projects with filters',
+            getProject: '/projects/:id (GET) - Get specific project',
+            updateProject: '/projects/:id (PUT) - 🔒 Update project',
+            deleteProject: '/projects/:id (DELETE) - 🔒 Delete project'
+        },
+        authentication: {
+            method: 'GitHub OAuth + JWT',
+            tokenHeader: 'Authorization: Bearer <token>',
+            cookieAuth: 'token cookie also supported'
+        },
+        database: {
+            status: 'Connected to MongoDB',
+            collections: ['users', 'projects']
         }
     });
 });
 
-// Main analysis route using owner/repo parameters
-app.get('/analyze/:owner/:repo', async (req, res) => {
-    const { owner, repo } = req.params;
-    const cacheKey = getCacheKey(owner, repo);
-    
+// Simple Authentication Routes (JWT only)
+
+app.get('/auth/profile', isAuthenticated, async (req, res) => {
     try {
-        // Check cache first
-        const cachedResult = getCachedData(cacheKey);
-        if (cachedResult) {
-            console.log(`✅ Returning cached result for: ${owner}/${repo}`);
-            return res.json({
-                ...cachedResult,
-                cached: true,
-                cacheAge: Math.floor((Date.now() - cachedResult.timestamp) / 1000) + 's ago'
+        // Get full user data from database
+        const user = await User.findById(req.user._id);
+        
+        if (!user) {
+            return res.status(404).json({
+                success: false,
+                error: 'User not found'
             });
         }
         
-        console.log(`🔍 Analyzing repository: ${owner}/${repo}`);
+        res.json({
+            success: true,
+            user: {
+                _id: user._id,
+                name: user.name,
+                githubId: user.githubId,
+                bio: user.bio,
+                tech_stack: user.tech_stack,
+                email: user.email,
+                avatar_url: user.avatar_url,
+                github_profile: user.github_profile,
+                createdAt: user.createdAt,
+                updatedAt: user.updatedAt
+            }
+        });
+    } catch (error) {
+        console.error('Profile fetch error:', error);
+        res.status(500).json({
+            success: false,
+            error: 'Failed to fetch profile'
+        });
+    }
+});
+
+// Simple user creation/login endpoint for testing
+app.post('/auth/create-user', async (req, res) => {
+    try {
+        const { name, githubId, email, bio = '', tech_stack = [] } = req.body;
         
-        // Fetch all repository data with individual error handling
-        const dataPromises = [
-            fetchRepoData(owner, repo).catch(err => ({ error: `Repo data: ${err.message}` })),
-            fetchLatestCommits(owner, repo, 3).catch(err => ({ error: `Commits: ${err.message}` })),
-            fetchOpenIssues(owner, repo, 3).catch(err => ({ error: `Issues: ${err.message}` })),
-            fetchReadme(owner, repo).catch(err => 'README fetch failed')
-        ];
-        
-        const [repoData, commits, issues, readme] = await Promise.all(dataPromises);
-        
-        // Check if critical data (repo info) failed
-        if (repoData.error) {
-            throw new Error(`Failed to fetch repository: ${repoData.error}`);
+        if (!name || !githubId) {
+            return res.status(400).json({
+                success: false,
+                error: 'Name and githubId are required'
+            });
         }
         
-        console.log('✅ Repository data fetched successfully');
+        // Check if user already exists
+        let user = await User.findOne({ githubId });
         
-        // Generate AI insights
-        const aiInsights = await generateAiInsights(
-            repoData, 
-            commits.error ? [] : commits, 
-            issues.error ? [] : issues, 
-            typeof readme === 'string' ? readme : 'No README available'
-        );
+        if (user) {
+            // User exists, generate token and return
+            const token = generateJWT(user);
+            return res.json({
+                success: true,
+                message: 'User already exists, logged in successfully',
+                token,
+                user: {
+                    _id: user._id,
+                    name: user.name,
+                    githubId: user.githubId,
+                    bio: user.bio,
+                    tech_stack: user.tech_stack,
+                    email: user.email,
+                    avatar_url: user.avatar_url,
+                    github_profile: user.github_profile
+                }
+            });
+        }
         
-        console.log('✅ AI insights generated successfully');
+        // Create new user
+        user = new User({
+            name,
+            githubId,
+            email,
+            bio,
+            tech_stack,
+            avatar_url: `https://github.com/identicons/${githubId}.png`,
+            github_profile: `https://github.com/${githubId}`
+        });
         
-        // Prepare response
-        const result = {
+        await user.save();
+        
+        // Generate JWT token
+        const token = generateJWT(user);
+        
+        res.status(201).json({
             success: true,
-            repository: {
-                owner,
-                repo,
-                url: `https://github.com/${owner}/${repo}`
+            message: 'User created successfully',
+            token,
+            user: {
+                _id: user._id,
+                name: user.name,
+                githubId: user.githubId,
+                bio: user.bio,
+                tech_stack: user.tech_stack,
+                email: user.email,
+                avatar_url: user.avatar_url,
+                github_profile: user.github_profile
             },
-            metadata: repoData,
-            commits: commits.error ? [] : commits,
-            issues: issues.error ? [] : issues,
-            readmeLength: typeof readme === 'string' ? readme.length : 0,
-            analysis: aiInsights,
-            generatedAt: new Date().toISOString(),
-            cached: false,
-            warnings: [
-                ...(commits.error ? [`Commits: ${commits.error}`] : []),
-                ...(issues.error ? [`Issues: ${issues.error}`] : []),
-                ...(typeof readme !== 'string' ? ['README could not be fetched'] : [])
-            ]
-        };
+            note: 'Use this token in Authorization header: Bearer <token>'
+        });
         
-        // Cache the result
-        setCachedData(cacheKey, result);
+    } catch (error) {
+        console.error('User creation error:', error);
+        res.status(500).json({
+            success: false,
+            error: 'Failed to create user',
+            details: error.message
+        });
+    }
+});
+
+// Main analysis route using owner/repo parameters (🔒 Auth Required)
+app.get('/analyze/:owner/:repo', isAuthenticated, async (req, res) => {
+    const { owner, repo } = req.params;
+    const userId = req.user._id; // Get user ID from authenticated user
+    
+    try {
+        const result = await analyzeRepository(owner, repo);
+        
+        // Save to database with authenticated user
+        try {
+            const savedProject = await saveProjectToDatabase(result, userId);
+            result.databaseId = savedProject._id;
+            result.savedToDatabase = true;
+            result.analyzedBy = {
+                _id: req.user._id,
+                name: req.user.name,
+                githubId: req.user.githubId
+            };
+        } catch (dbError) {
+            console.warn('⚠️ Failed to save to database:', dbError.message);
+            result.savedToDatabase = false;
+            result.databaseError = dbError.message;
+        }
         
         return res.json(result);
-        
     } catch (error) {
         console.error('❌ Analysis error:', error.message);
         return res.status(500).json({
@@ -303,9 +373,10 @@ app.get('/analyze/:owner/:repo', async (req, res) => {
     }
 });
 
-// Alternative route that accepts GitHub URL in request body
-app.post('/analyze-url', async (req, res) => {
+// Alternative route that accepts GitHub URL in request body (🔒 Auth Required)
+app.post('/analyze-url', isAuthenticated, async (req, res) => {
     const { repoUrl } = req.body;
+    const userId = req.user._id; // Get user ID from authenticated user
     
     if (!repoUrl) {
         return res.status(400).json({
@@ -316,72 +387,26 @@ app.post('/analyze-url', async (req, res) => {
     
     try {
         const { owner, repo } = extractRepoInfo(repoUrl);
-        const cacheKey = getCacheKey(owner, repo);
+        const result = await analyzeRepository(owner, repo);
         
-        // Check cache first
-        const cachedResult = getCachedData(cacheKey);
-        if (cachedResult) {
-            console.log(`✅ Returning cached result for URL: ${repoUrl}`);
-            return res.json({
-                ...cachedResult,
-                repository: { ...cachedResult.repository, url: repoUrl },
-                cached: true
-            });
+        // Update the repository URL in the response
+        result.repository.url = repoUrl;
+        
+        // Save to database with authenticated user
+        try {
+            const savedProject = await saveProjectToDatabase(result, userId);
+            result.databaseId = savedProject._id;
+            result.savedToDatabase = true;
+            result.analyzedBy = {
+                _id: req.user._id,
+                name: req.user.name,
+                githubId: req.user.githubId
+            };
+        } catch (dbError) {
+            console.warn('⚠️ Failed to save to database:', dbError.message);
+            result.savedToDatabase = false;
+            result.databaseError = dbError.message;
         }
-        
-        console.log(`🔍 Analyzing repository from URL: ${repoUrl} -> ${owner}/${repo}`);
-        
-        // Fetch all repository data with error handling
-        const dataPromises = [
-            fetchRepoData(owner, repo).catch(err => ({ error: `Repo data: ${err.message}` })),
-            fetchLatestCommits(owner, repo, 3).catch(err => ({ error: `Commits: ${err.message}` })),
-            fetchOpenIssues(owner, repo, 3).catch(err => ({ error: `Issues: ${err.message}` })),
-            fetchReadme(owner, repo).catch(err => 'README fetch failed')
-        ];
-        
-        const [repoData, commits, issues, readme] = await Promise.all(dataPromises);
-        
-        // Check if critical data failed
-        if (repoData.error) {
-            throw new Error(`Failed to fetch repository: ${repoData.error}`);
-        }
-        
-        console.log('✅ Repository data fetched successfully');
-        
-        // Generate AI insights
-        const aiInsights = await generateAiInsights(
-            repoData, 
-            commits.error ? [] : commits, 
-            issues.error ? [] : issues, 
-            typeof readme === 'string' ? readme : 'No README available'
-        );
-        
-        console.log('✅ AI insights generated successfully');
-        
-        // Prepare response
-        const result = {
-            success: true,
-            repository: {
-                owner,
-                repo,
-                url: repoUrl
-            },
-            metadata: repoData,
-            commits: commits.error ? [] : commits,
-            issues: issues.error ? [] : issues,
-            readmeLength: typeof readme === 'string' ? readme.length : 0,
-            analysis: aiInsights,
-            generatedAt: new Date().toISOString(),
-            cached: false,
-            warnings: [
-                ...(commits.error ? [`Commits: ${commits.error}`] : []),
-                ...(issues.error ? [`Issues: ${issues.error}`] : []),
-                ...(typeof readme !== 'string' ? ['README could not be fetched'] : [])
-            ]
-        };
-        
-        // Cache the result
-        setCachedData(cacheKey, result);
         
         return res.json(result);
         
@@ -392,6 +417,293 @@ app.post('/analyze-url', async (req, res) => {
             error: error.message,
             providedUrl: repoUrl,
             suggestion: 'Try again in a few moments. GitHub API might be experiencing issues.'
+        });
+    }
+});
+
+// Project structure endpoint
+app.get('/structure/:owner/:repo', async (req, res) => {
+    const { owner, repo } = req.params;
+    
+    try {
+        console.log(`🏗️ Fetching project structure for: ${owner}/${repo}`);
+        const structure = await getProjectStructure(owner, repo);
+        return res.json(structure);
+    } catch (error) {
+        console.error('❌ Structure fetch error:', error.message);
+        return res.status(500).json({
+            success: false,
+            error: error.message,
+            repository: { owner, repo },
+            suggestion: 'Try again in a few moments. GitHub API might be experiencing issues.'
+        });
+    }
+});
+
+// Download PowerPoint presentation endpoint
+app.get('/download-ppt/:owner/:repo', async (req, res) => {
+    const { owner, repo } = req.params;
+    
+    try {
+        console.log(`📊 Generating PowerPoint for: ${owner}/${repo}`);
+        
+        // First get the analysis data
+        const analysisData = await analyzeRepository(owner, repo);
+        
+        // Generate PowerPoint
+        const pres = await generatePitchDeckPPT(analysisData);
+        
+        // Set headers for file download
+        const filename = `${owner}-${repo}-pitch-deck.pptx`;
+        res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.presentationml.presentation');
+        res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+        
+        // Write presentation to response
+        await pres.writeFile({ fileName: filename, stream: res });
+        
+        console.log(`✅ PowerPoint generated and sent: ${filename}`);
+        
+    } catch (error) {
+        console.error('❌ PowerPoint generation error:', error.message);
+        return res.status(500).json({
+            success: false,
+            error: error.message,
+            repository: { owner, repo },
+            suggestion: 'Failed to generate PowerPoint. Try again later.'
+        });
+    }
+});
+
+// User management endpoints
+app.put('/users', isAuthenticated, async (req, res) => {
+    try {
+        const { bio, tech_stack } = req.body;
+        const userId = req.user._id;
+        
+        // Update current authenticated user
+        const user = await User.findById(userId);
+        
+        if (!user) {
+            return res.status(404).json({
+                success: false,
+                error: 'User not found'
+            });
+        }
+        
+        // Update allowed fields
+        if (bio !== undefined) user.bio = bio;
+        if (tech_stack !== undefined) user.tech_stack = tech_stack;
+        
+        await user.save();
+        console.log(`✅ Updated user profile: ${user.githubId}`);
+        
+        return res.json({
+            success: true,
+            user: user,
+            message: 'Profile updated successfully'
+        });
+        
+    } catch (error) {
+        console.error('❌ User update error:', error.message);
+        return res.status(500).json({
+            success: false,
+            error: error.message
+        });
+    }
+});
+
+app.get('/users/:githubId', async (req, res) => {
+    try {
+        const { githubId } = req.params;
+        const user = await User.findOne({ githubId });
+        
+        if (!user) {
+            return res.status(404).json({
+                success: false,
+                error: 'User not found'
+            });
+        }
+        
+        return res.json({
+            success: true,
+            user: user
+        });
+        
+    } catch (error) {
+        console.error('❌ User fetch error:', error.message);
+        return res.status(500).json({
+            success: false,
+            error: error.message
+        });
+    }
+});
+
+// Project management endpoints
+app.get('/projects', isAuthenticated, async (req, res) => {
+    try {
+        const { page = 1, limit = 10, status, language, my_projects } = req.query;
+        const skip = (page - 1) * limit;
+        
+        // Build query
+        const query = {};
+        if (status) query.status = status;
+        if (language) query['github_data.language'] = language;
+        
+        // If my_projects=true, only show current user's projects
+        if (my_projects === 'true') {
+            query.created_by = req.user._id;
+        }
+        
+        const projects = await Project.find(query)
+            .populate('created_by', 'name githubId avatar_url')
+            .sort({ last_analyzed: -1 })
+            .skip(skip)
+            .limit(parseInt(limit));
+            
+        const total = await Project.countDocuments(query);
+        
+        return res.json({
+            success: true,
+            projects: projects,
+            pagination: {
+                current_page: parseInt(page),
+                total_pages: Math.ceil(total / limit),
+                total_projects: total,
+                has_next: skip + projects.length < total,
+                has_prev: page > 1
+            },
+            requestedBy: {
+                _id: req.user._id,
+                name: req.user.name,
+                githubId: req.user.githubId
+            }
+        });
+        
+    } catch (error) {
+        console.error('❌ Projects fetch error:', error.message);
+        return res.status(500).json({
+            success: false,
+            error: error.message
+        });
+    }
+});
+
+app.get('/projects/:id', async (req, res) => {
+    try {
+        const { id } = req.params;
+        const project = await Project.findById(id).populate('created_by', 'name githubId avatar_url');
+        
+        if (!project) {
+            return res.status(404).json({
+                success: false,
+                error: 'Project not found'
+            });
+        }
+        
+        return res.json({
+            success: true,
+            project: project
+        });
+        
+    } catch (error) {
+        console.error('❌ Project fetch error:', error.message);
+        return res.status(500).json({
+            success: false,
+            error: error.message
+        });
+    }
+});
+
+app.put('/projects/:id', isAuthenticated, async (req, res) => {
+    try {
+        const { id } = req.params;
+        const updates = req.body;
+        
+        // First check if project exists and user owns it
+        const existingProject = await Project.findById(id);
+        if (!existingProject) {
+            return res.status(404).json({
+                success: false,
+                error: 'Project not found'
+            });
+        }
+        
+        // Check ownership
+        if (existingProject.created_by.toString() !== req.user._id.toString()) {
+            return res.status(403).json({
+                success: false,
+                error: 'Access denied. You can only update your own projects.'
+            });
+        }
+        
+        // Remove fields that shouldn't be updated directly
+        delete updates._id;
+        delete updates.createdAt;
+        delete updates.updatedAt;
+        delete updates.created_by;
+        delete updates.github_data;
+        delete updates.analysis;
+        
+        const project = await Project.findByIdAndUpdate(
+            id, 
+            { ...updates, last_analyzed: new Date() }, 
+            { new: true, runValidators: true }
+        ).populate('created_by', 'name githubId avatar_url');
+        
+        return res.json({
+            success: true,
+            project: project,
+            message: 'Project updated successfully'
+        });
+        
+    } catch (error) {
+        console.error('❌ Project update error:', error.message);
+        return res.status(500).json({
+            success: false,
+            error: error.message
+        });
+    }
+});
+
+app.delete('/projects/:id', isAuthenticated, async (req, res) => {
+    try {
+        const { id } = req.params;
+        
+        // First check if project exists and user owns it
+        const project = await Project.findById(id);
+        if (!project) {
+            return res.status(404).json({
+                success: false,
+                error: 'Project not found'
+            });
+        }
+        
+        // Check ownership
+        if (project.created_by.toString() !== req.user._id.toString()) {
+            return res.status(403).json({
+                success: false,
+                error: 'Access denied. You can only delete your own projects.'
+            });
+        }
+        
+        await Project.findByIdAndDelete(id);
+        console.log(`✅ Deleted project: ${project.name} by user: ${req.user.githubId}`);
+        
+        return res.json({
+            success: true,
+            message: 'Project deleted successfully',
+            deletedProject: {
+                _id: project._id,
+                name: project.name,
+                repo_link: project.repo_link
+            }
+        });
+        
+    } catch (error) {
+        console.error('❌ Project delete error:', error.message);
+        return res.status(500).json({
+            success: false,
+            error: error.message
         });
     }
 });
@@ -411,9 +723,18 @@ app.use((error, req, res, next) => {
 });
 
 app.listen(port, () => {
-    console.log(`🚀 GitHub Repository Analyzer API running on port ${port}`);
-    console.log(`📝 Endpoints:`);
-    console.log(`   GET  /analyze/:owner/:repo`);
-    console.log(`   POST /analyze-url (with JSON body: {"repoUrl": "..."})`);
+    console.log(`🚀 GitHub Repository Analyzer API with Database running on port ${port}`);
+    console.log(`📝 Analysis Endpoints:`);
+    console.log(`   GET  /analyze/:owner/:repo?userId=ID - Full analysis + save to DB`);
+    console.log(`   POST /analyze-url - Analysis with URL + save to DB`);
+    console.log(`   GET  /structure/:owner/:repo - Project structure`);
+    console.log(`   GET  /download-ppt/:owner/:repo - Download PowerPoint`);
+    console.log(`📝 Database Endpoints:`);
+    console.log(`   POST /users - Create/update user`);
+    console.log(`   GET  /users/:githubId - Get user by GitHub ID`);
+    console.log(`   GET  /projects - List all projects (with filters)`);
+    console.log(`   GET  /projects/:id - Get specific project`);
+    console.log(`   PUT  /projects/:id - Update project`);
     console.log(`🔧 Make sure to set GITHUB_TOKEN and GOOGLE_AI_API_KEY in .env file`);
+    console.log(`💾 Database: MongoDB connected successfully`);
 });
